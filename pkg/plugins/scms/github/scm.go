@@ -1,10 +1,15 @@
 package github
 
 import (
+	"bytes"
+	"context"
+	"encoding/base64"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 
+	"github.com/shurcooL/githubv4"
 	"github.com/sirupsen/logrus"
 )
 
@@ -73,15 +78,82 @@ func (g *Github) Commit(message string) error {
 		return err
 	}
 
-	err = g.nativeGitHandler.Commit(
-		g.Spec.User,
-		g.Spec.Email,
-		commitMessage,
-		g.GetDirectory(),
-		g.Spec.GPG.SigningKey,
-		g.Spec.GPG.Passphrase,
-	)
+	if g.commitUsingApi {
+		err = g.CreateCommit(commitMessage)
+		if err != nil {
+			return err
+		}
+	} else {
+		err = g.nativeGitHandler.Commit(
+			g.Spec.User,
+			g.Spec.Email,
+			commitMessage,
+			g.GetDirectory(),
+			g.Spec.GPG.SigningKey,
+			g.Spec.GPG.Passphrase,
+		)
+		if err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+type githubCommit struct {
+	CreateCommitOnBranch struct {
+		Commit struct {
+			URL string
+		}
+	} `graphql:"createCommitOnBranch(input:$input)"`
+}
+
+func (g *Github) CreateCommit(commitMessage string) error {
+	var m githubCommit
+
+	workingDir := g.GetDirectory()
+	files, err := g.nativeGitHandler.GetChangedFiles(workingDir)
 	if err != nil {
+		return err
+	}
+	// process added / modified files:
+	additions := make([]githubv4.FileAddition, 0, len(files))
+	for _, f := range files {
+		fullPath := fmt.Sprintf("%s/%s", workingDir, f)
+		enc, err := base64EncodeFile(fullPath)
+		if err != nil {
+			return err
+		}
+		additions = append(additions, githubv4.FileAddition{
+			Path:     githubv4.String(f),
+			Contents: githubv4.Base64String(enc),
+		})
+	}
+	// deletions := make([]githubv4.FileDeletion, 0, 0)
+
+	// expectedHeadOid := g.nativeGitHandler.
+	repositoryName := fmt.Sprintf("%s/%s", g.Spec.Owner, g.Spec.Repository)
+	headOid, err := g.nativeGitHandler.GetLatestCommitHash(workingDir)
+	if err != nil {
+		return err
+	}
+
+	input := githubv4.CreateCommitOnBranchInput{
+		Branch: githubv4.CommittableBranch{
+			RepositoryNameWithOwner: githubv4.NewString(githubv4.String(repositoryName)),
+			BranchName:              githubv4.NewString(githubv4.String(g.Spec.Branch)),
+		},
+		ExpectedHeadOid: githubv4.GitObjectID(headOid),
+		Message: githubv4.CommitMessage{
+			Headline: githubv4.String(commitMessage),
+		},
+		FileChanges: &githubv4.FileChanges{
+			Additions: &additions,
+			// Deletions: &deletions,
+		},
+	}
+
+	if err := g.client.Mutate(context.Background(), &m, input, nil); err != nil {
 		return err
 	}
 	return nil
@@ -169,4 +241,23 @@ func (g *Github) PushBranch(branch string) error {
 
 func (g *Github) GetChangedFiles(workingDir string) ([]string, error) {
 	return g.nativeGitHandler.GetChangedFiles(workingDir)
+}
+
+func base64EncodeFile(path string) (string, error) {
+	in, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer in.Close()
+
+	buf := bytes.Buffer{}
+	encoder := base64.NewEncoder(base64.StdEncoding, &buf)
+
+	if _, err := io.Copy(encoder, in); err != nil {
+		return "", err
+	}
+	if err := encoder.Close(); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
 }

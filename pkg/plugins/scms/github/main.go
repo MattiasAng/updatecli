@@ -150,6 +150,14 @@ type Spec struct {
 	//
 	//  default: true
 	WorkingBranch *bool `yaml:",omitempty"`
+	//  "commitUsingApi" defines if Updatecli should use a temporary branch to work on.
+	//  If set to `true`, Updatecli create a temporary branch to work on, based on the branch value.
+	//
+	//  compatible:
+	//	  * scm
+	//
+	//  default: false
+	CommitUsingAPI *bool `yaml:",omitempty"`
 }
 
 // GitHub contains settings to interact with GitHub
@@ -162,6 +170,7 @@ type Github struct {
 	nativeGitHandler gitgeneric.GitHandler
 	mu               sync.RWMutex
 	workingBranch    bool
+	commitUsingApi   bool
 }
 
 // Repository contains GitHub repository data
@@ -217,6 +226,11 @@ func New(s Spec, pipelineID string) (*Github, error) {
 		force = *s.Force
 	}
 
+	commitUsingApi := false
+	if s.CommitUsingAPI != nil {
+		commitUsingApi = *s.CommitUsingAPI
+	}
+
 	if force {
 		if !workingBranch && s.Force == nil {
 			errorMsg := fmt.Sprintf(`
@@ -243,6 +257,7 @@ If you know what you are doing, please set the force option to true in your conf
 		pipelineID:       pipelineID,
 		nativeGitHandler: nativeGitHandler,
 		workingBranch:    workingBranch,
+		commitUsingApi:   commitUsingApi,
 	}
 
 	if strings.HasSuffix(s.URL, "github.com") {
