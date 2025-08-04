@@ -127,7 +127,7 @@ type commitQuery struct {
 	} `graphql:"createCommitOnBranch(input:$input)"`
 }
 
-func (g *Github) CreateCommit(workingDir string, commitMessage string) error {
+func (g *Github) performCommit(workingDir string, commitMessage string) error {
 	var m commitQuery
 
 	sourceBranch, workingBranch, _ := g.GetBranches()
@@ -192,6 +192,19 @@ func (g *Github) CreateCommit(workingDir string, commitMessage string) error {
 
 	logrus.Debugf("commit created: %s", m.CreateCommitOnBranch.Commit.URL)
 	return nil
+}
+
+func (g *Github) CreateCommit(workingDir string, commitMessage string) error {
+	var err error
+	for i := range 5 {
+		logrus.Infof("Trying to commit #%d", i)
+		err = g.performCommit(workingDir, commitMessage)
+		if err == nil {
+			return nil
+		}
+		logrus.Warnf("Commit attempt #%d failed: %v", i, err)
+	}
+	return err
 }
 
 func processChangedFiles(workingDir string, files []string) ([]githubv4.FileAddition, error) {
